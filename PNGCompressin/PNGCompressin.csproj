@@ -5,4 +5,9 @@
     <TargetFramework>netcoreapp3.0</TargetFramework>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="SharpZipLib" Version="1.2.0" />
+    <PackageReference Include="zlib.net" Version="1.0.4" />
+  </ItemGroup>
+
 </Project>

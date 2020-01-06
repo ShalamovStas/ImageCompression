@@ -1,8 +1,12 @@
-﻿using System;
+﻿using ICSharpCode.SharpZipLib.GZip;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
+using System.Linq;
 using System.Text;
+using zlib;
 
 namespace PNGCompressin
 {
@@ -37,6 +41,27 @@ namespace PNGCompressin
             PrintChunks(bytes);
         }
 
+        public void PrintByte(byte[] bytes)
+        {
+            if (bytes == null)
+                return;
+
+            int lineCount = 0;
+
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                Console.Write("{0:x2} ", bytes[i]);
+                lineCount++;
+                if (lineCount == 16)
+                {
+                    Console.WriteLine();
+                    lineCount = 0;
+                }
+            }
+
+            Console.WriteLine("\n=====");
+        }
+
         private void SetColor(int index)
         {
             if (index < headerIndex)
@@ -50,75 +75,99 @@ namespace PNGCompressin
         {
             List<Chunk> list = new List<Chunk>();
 
-            ReadChunk(bytes, headerIndex);
+            var firstChunk = ReadChunk(bytes, headerIndex);
+            var index = headerIndex;
+            while (true)
+            {
+                if (index == bytes.Length)
+                    break;
+                Chunk chunk = new Chunk();
+                chunk = ReadChunk(bytes, index);
+                list.Add(chunk);
+                index = chunk.LastIndex;
 
-            //for (int i = headerIndex; i < bytes.Length; i++)
-            //{
-            //    Chunk chunk = new Chunk();
-            //    if(bytes.Length < headerIndex)
-            //    chunk.Length = bytes[i] + bytes[i + 1] + bytes[i + 2] + bytes[i+3];
-            //
-            //    i += 3;
-            //
-            //
-            //    Console.Write("{0:x2} ", chunk.Length);
-            //    break;
-            //}
+            }
 
-            //byte byte1 = 0x00;
-            //byte byte2 = 0x00;
-            //byte byte3 = 0x00;
-            //byte byte4 = 0x0D;
-            //
-            //var res = byte1 + byte2 + byte3 + byte4;
-            //Console.WriteLine($"res = {res}");
+            
+
+            PNG png = new PNG();
+            png.Chunks = list;
+
+            for (int i = 0; i < firstChunk.Data.Length; i++)
+            {
+                if (i < 4)
+                {
+                    png.Width += firstChunk.Data[i];
+                    continue;
+                }
+                if (i >= 4 && i < 8)
+                {
+                    png.Height += firstChunk.Data[i];
+                    continue;
+                }
+                if (i == 8)
+                    png.BitDepth = firstChunk.Data[i];
+                if (i == 9)
+                    png.ColorType = firstChunk.Data[i];
+                if (i == 10)
+                    png.CompressionMethod = firstChunk.Data[i];
+                if (i == 11)
+                    png.FilterMethod = firstChunk.Data[i];
+                if (i == 12)
+                    png.InterlaceMethod = firstChunk.Data[i];
+            }
+
+            Console.WriteLine("===IDAT===");
+            var IDAT = list.Where(ch => ch.CType.Contains("IDAT")).FirstOrDefault();
+            PrintByte(IDAT.Data);
+
+
+            Console.WriteLine("=====Decompressed====");
+            byte[] decompreseeedData;
+            DecompressData(IDAT.Data, out decompreseeedData);
+
+            PrintByte(decompreseeedData);
+
+
         }
 
         private Chunk ReadChunk(byte[] bytes, int startIndex)
         {
+            var headerLength = 8;
             var chunklengthLength = 4;
             var chunkTypeLength = 4;
             byte chunkDataLength = 0;
             var crcLength = 4;
 
-            
+
             if (bytes.Length < startIndex + chunklengthLength + chunkTypeLength)
                 throw new Exception();
 
-            Console.WriteLine("Read chunk");
             for (int i = startIndex; i < startIndex + chunklengthLength; i++)
-            {
                 chunkDataLength += bytes[i];
-                Console.Write("{0:x2} ", bytes[i]);
-            }
-            Console.WriteLine($"\nLength:{chunkDataLength}");
 
             if (bytes.Length < startIndex + chunklengthLength + chunkTypeLength + chunkDataLength + crcLength)
                 throw new Exception();
 
-            byte CType = 0;
-            for (int i = startIndex + chunklengthLength; i < startIndex + chunklengthLength + chunkTypeLength; i++)
-                CType += bytes[i];
+            string CType;
+            byte[] type = new byte[4];
+            type = bytes.Skip(startIndex + 4).Take(4).ToArray();
+            CType = System.Text.Encoding.UTF8.GetString(type);
 
-            Console.WriteLine($"\nCType:{CType}");
 
-            Console.WriteLine("Data");
             byte[] Data = new byte[chunkDataLength];
             var index = 0;
-            for (int i = startIndex + chunklengthLength + chunkTypeLength; i < startIndex + chunklengthLength + chunkTypeLength + chunkDataLength; i++) {
+            for (int i = startIndex + chunklengthLength + chunkTypeLength; i < startIndex + chunklengthLength + chunkTypeLength + chunkDataLength; i++)
+            {
                 Data[index] = bytes[i];
-                Console.Write("{0:x2} ", bytes[i]);
                 index++;
             }
-            Console.WriteLine();
 
-            Console.WriteLine("Crc");
             byte[] Crc = new byte[crcLength];
             index = 0;
             for (int i = startIndex + chunklengthLength + chunkTypeLength + chunkDataLength; i < startIndex + chunklengthLength + chunkTypeLength + chunkDataLength + crcLength; i++)
             {
                 Crc[index] = bytes[i];
-                Console.Write("{0:x2} ", bytes[i]);
                 index++;
             }
 
@@ -127,17 +176,66 @@ namespace PNGCompressin
             chunk.Length = chunkDataLength;
             chunk.Data = Data;
             chunk.Crc32 = Crc;
+            chunk.CType = CType;
             chunk.LastIndex = startIndex + chunklengthLength + chunkTypeLength + chunkDataLength + crcLength;
             return chunk;
         }
+
+        public static void CompressData(byte[] inData, out byte[] outData)
+        {
+            using (MemoryStream outMemoryStream = new MemoryStream())
+            using (ZOutputStream outZStream = new ZOutputStream(outMemoryStream, zlibConst.Z_DEFAULT_COMPRESSION))
+            using (Stream inMemoryStream = new MemoryStream(inData))
+            {
+                CopyStream(inMemoryStream, outZStream);
+                outZStream.finish();
+                outData = outMemoryStream.ToArray();
+            }
+        }
+
+        public static void DecompressData(byte[] inData, out byte[] outData)
+        {
+            using (MemoryStream outMemoryStream = new MemoryStream())
+            using (ZOutputStream outZStream = new ZOutputStream(outMemoryStream))
+            using (Stream inMemoryStream = new MemoryStream(inData))
+            {
+                CopyStream(inMemoryStream, outZStream);
+                outZStream.finish();
+                outData = outMemoryStream.ToArray();
+            }
+        }
+
+        public static void CopyStream(System.IO.Stream input, System.IO.Stream output)
+        {
+            byte[] buffer = new byte[2000];
+            int len;
+            while ((len = input.Read(buffer, 0, 2000)) > 0)
+            {
+                output.Write(buffer, 0, len);
+            }
+            output.Flush();
+        }
     }
 
-    struct Chunk
+    class Chunk
     {
         public byte Length { get; set; }
         public string CType { get; set; }
         public byte[] Data { get; set; }
         public byte[] Crc32 { get; set; }
         public int LastIndex { get; set; }
+    }
+
+    class PNG
+    {
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int BitDepth { get; set; }
+        public int ColorType { get; set; }
+        public int CompressionMethod { get; set; }
+        public int FilterMethod { get; set; }
+        public int InterlaceMethod { get; set; }
+        public List<Chunk> Chunks { get; set; }
+        public int NumberOfChunks { get; set; }
     }
 }
